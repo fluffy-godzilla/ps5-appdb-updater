@@ -1,0 +1,11 @@
+services:
+  ps5-appdb-updater:
+    image: ghcr.io/fluffy-godzilla/ps5-appdb-updater:latest
+    container_name: ps5-appdb-updater
+    ports:
+      - 5000:5000
+    environment:
+      - PS5_SERVER=192.168.10.100
+      - SQL_SCRIPT_PATH=/scripts/cleanup.sql
+    volumes:
+      - ./examples:/scripts:ro

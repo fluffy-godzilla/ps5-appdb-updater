@@ -6,6 +6,7 @@ services:
       - 5000:5000
     environment:
       - PS5_SERVER=192.168.10.100
-      - SQL_SCRIPT_PATH=/scripts/cleanup.sql
+      - APPDB_SCRIPT_PATH=/scripts/appdb.sql
+      - INFODB_SCRIPT_PATH=/scripts/infodb.sql
     volumes:
       - ./examples:/scripts:ro

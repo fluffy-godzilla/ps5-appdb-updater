@@ -8,9 +8,12 @@ from flask import Flask, render_template, redirect, url_for, flash, request
 app = Flask(__name__)
 app.secret_key = 'super_secret_flash_key'
 
-LOCAL_DB_FILE = "local_app.db"
-
 HTML_TEMPLATE = 'main.html'
+
+REMOTE_PATH = '/system_data/priv/mms'
+
+APPDB_FILE = 'app.db'
+INFOPDB_FILE = 'appinfo.db'
 
 def get_ftp_connection(ftp_url):
     """Parses FTP URL and returns an authenticated FTP instance."""
@@ -42,25 +45,121 @@ def ensure_remote_directories(ftp, remote_path):
             except Exception as e:
                 raise Exception(f"Failed to create remote directory '{part}': {e}")
 
+
+def backup_and_update_db(ps5_server, script_path, db_file):
+    """Handles the backup and update process for a given database file."""
+    if not script_path or not os.path.exists(script_path):
+        flash(f"Error: {db_file} script file not found at '{script_path}'.", "error")
+        return None
+
+    # Read the SQL script content
+    try:
+        with open(script_path, 'r', encoding='utf-8') as f:
+            sql_script = f.read()
+    except Exception as e:
+        flash(f"Error reading SQL script file(s): {e}", "error")
+        return None
+
+    # Prepare local file path for temporary storage
+    local_db = f"local_{db_file}"
+    if os.path.exists(local_db):
+        os.remove(local_db)
+
+    ftp_url = f"ftp://{ps5_server}{REMOTE_PATH}/"
+    ftp = None
+    file_existed = False
+    
+    try:
+        ftp, remote_path = get_ftp_connection(ftp_url)
+        target_path = f"{remote_path}/{db_file}"
+        
+        print(f"Attempting to download from {ftp_url}...")
+        try:
+            with open(local_db, "wb") as file:
+                ftp.retrbinary(f"RETR {target_path}", file.write)
+            file_existed = True
+        except error_perm as e:
+            if "550" in str(e):
+                file_existed = False
+            else:
+                raise e
+
+        # Create a timestamped backup on the server if the file existed
+        if file_existed:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_file = f"{target_path}.{timestamp}.bak"
+            
+            print(f"Creating remote backup at: {backup_file}")
+            try:
+                ftp.voidcmd(f"SITE COPY {target_path} {backup_file}")
+            except Exception as e:
+                raise Exception(f"Failed to create remote backup file: {e}")
+
+        # Apply SQL updates locally
+        print("Applying SQL updates locally...")
+        conn = sqlite3.connect(local_db)
+        cursor = conn.cursor()
+        cursor.executescript(sql_script)
+        conn.commit()
+        conn.close()
+
+        # Ensure target directories exist on the FTP server
+        print("Verifying target directories on FTP server...")
+        ensure_remote_directories(ftp, remote_path)
+        
+        # Upload the updated file back to the target location
+        print("Uploading updated file back to target...")
+        ftp.cwd('/') 
+        with open(local_db, "rb") as file:
+            ftp.storbinary(f"STOR {target_path}", file)
+        
+        # Set correct permissions on the uploaded file
+        ftp.sendcmd(f"SITE CHMOD 644 {target_path}")
+
+    except Exception as e:
+        raise Exception(f"Process failed: {e}")
+    finally:
+        if ftp:
+            try: ftp.quit()
+            except Exception: pass
+        if os.path.exists(local_db):
+            os.remove(local_db)
+
+    return True
+
 @app.route('/')
 def home():
+    appdb_script_path = os.environ.get("APPDB_SCRIPT_PATH", "")
+    infodb_script_path = os.environ.get("INFODB_SCRIPT_PATH", "")
     ps5_server = os.environ.get("PS5_SERVER", "")
-    sql_script_path = os.environ.get("SQL_SCRIPT_PATH", "")
+    appdb_script_content = ""
+    infodb_script_content = ""
     backups = []
-    script_content = ""
     
-    if sql_script_path and os.path.exists(sql_script_path):
+    if appdb_script_path and os.path.exists(appdb_script_path):
         try:
-            with open(sql_script_path, 'r', encoding='utf-8') as f:
-                script_content = f.read()
+            with open(appdb_script_path, 'r', encoding='utf-8') as f:
+                appdb_script_content = f.read()
         except Exception as e:
             print(f"Error reading script file for UI: {e}")
-            script_content = f"-- Error loading script: {e}"
+            appdb_script_content = f"-- Error loading script: {e}"
     else:
-        script_content = "-- SQL_SCRIPT_PATH variable not set or file missing."
-    
+        appdb_script_content = "-- APPDB_SCRIPT_PATH variable not set or file missing."
+
+
+    if infodb_script_path and os.path.exists(infodb_script_path):
+        try:
+            with open(infodb_script_path, 'r', encoding='utf-8') as f:
+                infodb_script_content = f.read()
+        except Exception as e:
+            print(f"Error reading script file for UI: {e}")
+            infodb_script_content = f"-- Error loading script: {e}"
+    else:
+        infodb_script_content = "-- INFODB_SCRIPT_PATH variable not set or file missing."
+
+
     if ps5_server:
-        ftp_url = f"ftp://{ps5_server}/system_data/priv/mms/app.db"
+        ftp_url = f"ftp://{ps5_server}{REMOTE_PATH}/"
         ftp = None
         try:
             ftp, remote_path = get_ftp_connection(ftp_url)
@@ -70,8 +169,8 @@ def home():
             ftp.cwd(remote_dir)
             files = ftp.nlst()
             
-            # Filter file names matching 'app.db.*.bak'
-            backups = sorted([f for f in files if f.startswith("app.db.") and f.endswith(".bak")], reverse=True)
+            # Filter file names matching 'app*.bak'
+            backups = sorted([f for f in files if f.startswith("app") and f.endswith(".bak")], reverse=True)
         except Exception as e:
             print(f"Could not fetch backup file listings: {e}")
         finally:
@@ -82,23 +181,30 @@ def home():
     return render_template(
         HTML_TEMPLATE,
         backups=backups,
-        script_content=script_content, 
-        script_path=sql_script_path if sql_script_path else "Not Configured"
+        appdb_script_content=appdb_script_content,
+        infodb_script_content=infodb_script_content,
+        appdb_script_path=appdb_script_path if appdb_script_path else "Not Configured",
+        infodb_script_path=infodb_script_path if infodb_script_path else "Not Configured"
     )
 
 @app.route('/save_script', methods=['POST'])
 def save_script():
-    sql_script_path = os.environ.get("SQL_SCRIPT_PATH", "")
+    script_target = request.form.get("script_target", "")
     new_content = request.form.get("script_content", "")
+
+    if script_target == "appdb":
+        sql_script_path = os.environ.get("APPDB_SCRIPT_PATH", "")
+    elif script_target == "infodb":
+        sql_script_path = os.environ.get("INFODB_SCRIPT_PATH", "")
     
     if not sql_script_path:
-        flash("Error: SQL_SCRIPT_PATH environment variable is not set.", "error")
+        flash("Error: APPDB_SCRIPT_PATH or INFODB_SCRIPT_PATH environment variable is not set.", "error")
         return redirect(url_for('home'))
-        
+
     try:
         with open(sql_script_path, 'w', encoding='utf-8') as f:
             f.write(new_content)
-        flash("SQL script modifications saved successfully to disk!", "success")
+        flash(f"{sql_script_path} SQL script modifications saved successfully to disk!", "success")
     except Exception as e:
         flash(f"Failed to save script changes: {e}", "error")
         
@@ -107,87 +213,12 @@ def save_script():
 @app.route('/update', methods=['POST'])
 def update_db():
     ps5_server = os.environ.get("PS5_SERVER", "")
-    sql_script_path = os.environ.get("SQL_SCRIPT_PATH", "")
-    
-    if not ps5_server:
-        flash("Error: PS5_SERVER environment variable is not set.", "error")
-        return redirect(url_for('home'))
-        
-    if not sql_script_path or not os.path.exists(sql_script_path):
-        flash(f"Error: SQL script file not found at '{sql_script_path}'.", "error")
-        return redirect(url_for('home'))
-        
-    try:
-        with open(sql_script_path, 'r', encoding='utf-8') as f:
-            sql_script = f.read()
-    except Exception as e:
-        flash(f"Error reading SQL script file: {e}", "error")
-        return redirect(url_for('home'))
+    appdb_script_path = os.environ.get("APPDB_SCRIPT_PATH", "")
+    infodb_script_path = os.environ.get("INFODB_SCRIPT_PATH", "")
 
-    ftp_url = f"ftp://{ps5_server}/system_data/priv/mms/app.db"
-    ftp = None
-    file_existed = False
-    
-    if os.path.exists(LOCAL_DB_FILE):
-        os.remove(LOCAL_DB_FILE)
-        
-    try:
-        ftp, remote_path = get_ftp_connection(ftp_url)
-        
-        print(f"Attempting to download from {ftp_url}...")
-        try:
-            with open(LOCAL_DB_FILE, "wb") as local_file:
-                ftp.retrbinary(f"RETR {remote_path}", local_file.write)
-            file_existed = True
-        except error_perm as e:
-            if "550" in str(e):
-                file_existed = False
-            else:
-                raise e
-            
-        if file_existed:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup_path = f"{remote_path}.{timestamp}.bak"
-            print(f"Creating remote backup at: {backup_path}")
-            try:
-                # we don't rename but copy instead to keep the original in place, otherwise the PS5 software
-                # causes the database rebuild
-                ftp.voidcmd(f"SITE COPY {remote_path} {backup_path}")
-            except Exception as e:
-                raise Exception(f"Failed to create remote backup file: {e}")
-            
-        print("Applying SQL updates locally...")
-        conn = sqlite3.connect(LOCAL_DB_FILE)
-        cursor = conn.cursor()
-        cursor.executescript(sql_script)
-        conn.commit()
-        conn.close()
-        
-        print("Verifying target directories on FTP server...")
-        ensure_remote_directories(ftp, remote_path)
-        
-        print("Uploading updated file back to target...")
-        ftp.cwd('/') 
-        with open(LOCAL_DB_FILE, "rb") as local_file:
-            # replace the contents of the existing remote file
-            ftp.storbinary(f"STOR {remote_path}", local_file)
-        ftp.cwd(os.path.dirname(remote_path))
-        # this is not necessary for the PS5, but it is a good practice to set the correct permissions on the uploaded file
-        ftp.sendcmd(f"SITE CHMOD 644 {os.path.basename(remote_path)}")
-
-        if file_existed:
-            flash("Database successfully backed up, updated, and uploaded!", "success")
-        else:
-            flash("Remote target initialized. Created folder tree and saved fresh database!", "success")
-        
-    except Exception as e:
-        flash(f"Process failed: {e}", "error")
-    finally:
-        if ftp:
-            try: ftp.quit()
-            except Exception: pass
-        if os.path.exists(LOCAL_DB_FILE):
-            os.remove(LOCAL_DB_FILE)
+    if (backup_and_update_db(ps5_server, appdb_script_path, APPDB_FILE) and 
+        backup_and_update_db(ps5_server, infodb_script_path, INFOPDB_FILE)):
+        flash("Successfully updated both databases on the PS5 server.", "success")
             
     return redirect(url_for('home'))
 
@@ -204,7 +235,7 @@ def delete_backup():
         flash("Error: No backup target specified to delete.", "error")
         return redirect(url_for('home'))
 
-    ftp_url = f"ftp://{ps5_server}/system_data/priv/mms/app.db"
+    ftp_url = f"ftp://{ps5_server}{REMOTE_PATH}/"
     ftp = None
     
     try:
@@ -215,7 +246,7 @@ def delete_backup():
         target_backup_path = os.path.join(remote_dir, backup_filename)
         
         # 1. Delete selected backup
-        print(f"Deleting backup '{backup_filename}'...")
+        print(f"Deleting backup '{backup_filename}' at {target_backup_path}...")
         ftp.delete(target_backup_path)
         
         flash(f"Successfully deleted database backup: {backup_filename}", "success")
@@ -229,8 +260,6 @@ def delete_backup():
                 ftp.quit()
             except Exception:
                 pass
-        if os.path.exists(LOCAL_DB_FILE):
-            os.remove(LOCAL_DB_FILE)
 
     return redirect(url_for('home'))
 
@@ -247,7 +276,7 @@ def revert_db():
         flash("Error: No backup target specified to revert.", "error")
         return redirect(url_for('home'))
 
-    ftp_url = f"ftp://{ps5_server}/system_data/priv/mms/app.db"
+    ftp_url = f"ftp://{ps5_server}{REMOTE_PATH}/"
     ftp = None
     
     try:
@@ -255,13 +284,14 @@ def revert_db():
         remote_dir = os.path.dirname(remote_path)
         
         # Paths for renaming operations on the server side
-        target_live_path = remote_path
+        target = APPDB_FILE if backup_filename.startswith(APPDB_FILE) else INFOPDB_FILE
+        target_live_path = os.path.join(remote_dir, target)
         target_backup_path = os.path.join(remote_dir, backup_filename)
         
         # 1. move the contents of the backup files to the active databases
         try:
             ftp.voidcmd(f"SITE COPY {target_backup_path} {target_live_path}")
-            print(f"Restored app.db from: {backup_filename}")
+            print(f"Restored DB from: {backup_filename}")
         except error_perm:
             # Active database didn't exist or wasn't accessible, safe to continue
             pass
@@ -281,8 +311,6 @@ def revert_db():
                 ftp.quit()
             except Exception:
                 pass
-        if os.path.exists(LOCAL_DB_FILE):
-            os.remove(LOCAL_DB_FILE)
             
     return redirect(url_for('home'))
 

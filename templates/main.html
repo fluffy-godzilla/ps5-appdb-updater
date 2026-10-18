@@ -2,6 +2,10 @@
 <html>
 <head>
     <title>SQLite Remote Manager & Editor</title>
+
+    <!-- Our own styles -->
+    <link rel="stylesheet" href="static/main.css" />
+
     <!-- CodeMirror Core Styles and Theme -->
     <link rel="stylesheet" href="static/codemirror/lib/codemirror.css" />
     <script src="static/codemirror/lib/codemirror.js"></script>
@@ -10,28 +14,6 @@
     <link rel="stylesheet" href="static/codemirror/addon/hint/show-hint.css" />
     <script src="static/codemirror/addon/hint/show-hint.js"></script>
     <script src="static/codemirror/addon/hint/sql-hint.js"></script>
-
-    <style>
-        body { font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background-color: #f4f6f9; padding: 20px; box-sizing: border-box; }
-        .card { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; width: 100%; margin-bottom: 20px; }
-        .btn { color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 4px; cursor: pointer; transition: background 0.2s; width: 100%; box-sizing: border-box; }
-        .btn-update { background-color: #28a745; }
-        .btn-update:hover { background-color: #218838; }
-        .btn-save { background-color: #007bff; margin-top: 15px; margin-bottom: 0; }
-        .btn-save:hover { background-color: #0056b3; }
-        .btn-revert { background-color: #dc3545; padding: 6px 12px; font-size: 14px; width: auto; }
-        .btn-revert:hover { background-color: #c82333; }
-        .alert { padding: 10px; margin-bottom: 20px; border-radius: 4px; text-align: left; word-wrap: break-word; }
-        .success { color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
-        .error { color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
-        .editor-section { text-align: left; margin-bottom: 25px; border-bottom: 1px solid #eee; padding-bottom: 25px; }
-        /* Set standard height and structural borders for CodeMirror viewport */
-        .CodeMirror { height: 250px; border-radius: 4px; font-family: 'Courier New', Courier, monospace; font-size: 14px; border: 1px solid #ccc; }
-        .backup-list { text-align: left; margin-top: 20px; border-top: 1px solid #eee; padding-top: 20px; }
-        .backup-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed #eee; font-family: monospace; font-size: 13px; }
-        h2, h3 { color: #333; margin-top: 0; }
-        .file-path { font-size: 12px; color: #666; font-family: monospace; background: #eee; padding: 2px 6px; border-radius: 3px; }
-    </style>
 </head>
 <body>
     <div class="card">
@@ -43,48 +25,76 @@
           {% endif %}
         {% endwith %}
 
-        <div class="editor-section">
-            <h2>SQL Script Editor</h2>
-            <p>Editing: <span class="file-path">{{ script_path }}</span></p>
-            <form action="/save_script" method="POST">
-                <!-- Our base textarea that CodeMirror will bind to -->
-                <textarea id="sql-editor" name="script_content">{{ script_content }}</textarea>
-                <button type="submit" class="btn btn-save">Save Script Changes</button>
-            </form>
-        </div>
-                
-        <h2>Database Actions</h2>
-        <form action="/update" method="POST">
-            <button type="submit" class="btn btn-update">Backup, Update & Upload</button>
-        </form>
+        <div class="tabs-widget">
+            <!-- Tab Navigation Buttons -->
+            <div class="tab-nav">
+                <button class="tab-btn active" data-target="panel-actions">Database Actions</button>
+                <button class="tab-btn" data-target="panel-appdb">App.db Script</button>
+                <button class="tab-btn" data-target="panel-infodb">Appinfo.db Script</button>
+            </div>
 
-        <div class="backup-list">
-            <h3>Available Remote Backups</h3>
-            {% if backups %}
-                {% for backup in backups %}
-                    <div class="backup-item">
-                        <span>{{ backup }}</span>
-                        <form action="/revert" method="POST" style="margin: 0;">
-                            <input type="hidden" name="backup_filename" value="{{ backup }}">
-                            <button type="submit" class="btn btn-revert">Revert</button>
-                        </form>
-                        <form action="/delete" method="POST" style="margin: 0;">
-                            <input type="hidden" name="backup_filename" value="{{ backup }}">
-                            <button type="submit" class="btn btn-revert">Delete</button>
+            <!-- Tab Panels Container -->
+            <div id="panels" class="tab-body">            
+                <div id="panel-actions" class="tab-panel active">
+                    <form action="/update" method="POST">
+                        <button type="submit" class="btn btn-update">Backup, Update & Upload</button>
+                    </form>
+
+                    <div class="backup-list">
+                        <h3>Available Remote Backups</h3>
+                        {% if backups %}
+                            {% for backup in backups %}
+                                <div class="backup-item">
+                                    <span>{{ backup }}</span>
+                                    <div class="backup-actions">
+                                        <form action="/revert" method="POST" style="margin: 0;">
+                                            <input type="hidden" name="backup_filename" value="{{ backup }}">
+                                            <button type="submit" class="btn btn-revert">Revert</button>
+                                        </form>
+                                        <form action="/delete" method="POST" style="margin: 0;">
+                                            <input type="hidden" name="backup_filename" value="{{ backup }}">
+                                            <button type="submit" class="btn btn-revert">Delete</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        {% else %}
+                            <p style="color: #777; font-size: 14px; font-style: italic;">No remote backups found in directory.</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div id="panel-appdb" class="tab-panel">
+                    <div class="editor-section">
+                        <p>Editing: <span class="file-path">{{ appdb_script_path }}</span></p>
+                        <form action="/save_script" method="POST">
+                            <input type="hidden" name="script_target" value="appdb">
+                            <!-- Our base textarea that CodeMirror will bind to -->
+                            <textarea id="appdb-sql-editor" name="script_content">{{ appdb_script_content }}</textarea>
+                            <button type="submit" class="btn btn-save">Save Changes</button>
                         </form>
                     </div>
-                {% endfor %}
-            {% else %}
-                <p style="color: #777; font-size: 14px; font-style: italic;">No remote backups found in directory.</p>
-            {% endif %}
+                </div>
+
+                <div id="panel-infodb" class="tab-panel">
+                    <div class="editor-section">
+                        <p>Editing: <span class="file-path">{{ infodb_script_path }}</span></p>
+                        <form action="/save_script" method="POST">
+                            <input type="hidden" name="script_target" value="infodb">
+                            <!-- Our base textarea that CodeMirror will bind to -->
+                            <textarea id="infodb-sql-editor" name="script_content">{{ infodb_script_content }}</textarea>
+                            <button type="submit" class="btn btn-save">Save Changes</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <!-- CodeMirror Core Core JS Engine and SQL Mode Addon -->
     <script>
         window.addEventListener('DOMContentLoaded', (event) => {
-            // Instantiate CodeMirror and attach to the textarea element
-            var editor = CodeMirror.fromTextArea(document.getElementById("sql-editor"), {
+            var config = {
                 mode: "text/x-sqlite",
                 lineNumbers: true,
                 indentWithTabs: true,
@@ -95,6 +105,33 @@
                 hintOptions: {tables: {
                     tbl_contentInfo: ["sortPriority", "titleId"]
                 }}
+            };
+            var appdbEditor = CodeMirror.fromTextArea(document.getElementById("appdb-sql-editor"), config);
+            var infodbEditor = CodeMirror.fromTextArea(document.getElementById("infodb-sql-editor"), config);
+
+            const buttons = document.querySelectorAll('.tab-btn');
+            const panels = document.querySelectorAll('.tab-panel');
+
+            buttons.forEach(button => {
+                button.addEventListener('click', () => {
+                    // 1. Remove active state class from all styling elements
+                    buttons.forEach(btn => btn.classList.remove('active'));
+                    panels.forEach(panel => panel.classList.remove('active'));
+
+                    // 2. Add active state to the current clicked button
+                    button.classList.add('active');
+
+                    // 3. Find and activate the matching data panel target
+                    const targetId = button.getAttribute('data-target');
+                    document.getElementById(targetId).classList.add('active');
+
+                    // Force CodeMirror to redraw its layout (doing this because the editors are hidden when 
+                    // switching tabs and the resulting layout is broken until the displayed editor is refreshed)
+                    requestAnimationFrame(() => {
+                        appdbEditor.refresh(); 
+                        infodbEditor.refresh(); 
+                    });
+                });
             });
         });
     </script>

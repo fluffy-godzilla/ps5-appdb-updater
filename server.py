@@ -56,6 +56,10 @@ HTML_TEMPLATE = """
                             <input type="hidden" name="backup_filename" value="{{ backup }}">
                             <button type="submit" class="btn btn-revert">Revert</button>
                         </form>
+                        <form action="/delete" method="POST" style="margin: 0;">
+                            <input type="hidden" name="backup_filename" value="{{ backup }}">
+                            <button type="submit" class="btn btn-revert">Delete</button>
+                        </form>
                     </div>
                 {% endfor %}
             {% else %}
@@ -206,6 +210,49 @@ def update_db():
         if os.path.exists(LOCAL_DB_FILE):
             os.remove(LOCAL_DB_FILE)
             
+    return redirect(url_for('home'))
+
+@app.route('/delete', methods=['POST'])
+def delete_backup():
+    ps5_server = os.environ.get("PS5_SERVER", "")
+    backup_filename = request.form.get("backup_filename")
+    
+    if not ps5_server:
+        flash("Error: PS5_SERVER environment variable is not set.", "error")
+        return redirect(url_for('home'))
+        
+    if not backup_filename:
+        flash("Error: No backup target specified to delete.", "error")
+        return redirect(url_for('home'))
+
+    ftp_url = f"ftp://{ps5_server}/system_data/priv/mms/app.db"
+    ftp = None
+    
+    try:
+        ftp, remote_path = get_ftp_connection(ftp_url)
+        remote_dir = os.path.dirname(remote_path)
+        
+        # Paths for renaming operations on the server side
+        target_backup_path = os.path.join(remote_dir, backup_filename)
+        
+        # 1. Delete selected backup
+        print(f"Deleting backup '{backup_filename}'...")
+        ftp.delete(target_backup_path)
+        
+        flash(f"Successfully deleted database backup: {backup_filename}", "success")
+        
+    except Exception as e:
+        flash(f"Delete operation failed: {e}", "error")
+
+    finally:
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+        if os.path.exists(LOCAL_DB_FILE):
+            os.remove(LOCAL_DB_FILE)
+
     return redirect(url_for('home'))
 
 @app.route('/revert', methods=['POST'])

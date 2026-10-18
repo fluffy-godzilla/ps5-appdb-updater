@@ -3,73 +3,14 @@ import datetime
 import sqlite3
 from ftplib import FTP, error_perm
 from urllib.parse import urlparse
-from flask import Flask, render_template_string, redirect, url_for, flash, request
+from flask import Flask, render_template, redirect, url_for, flash, request
 
 app = Flask(__name__)
 app.secret_key = 'super_secret_flash_key'
 
 LOCAL_DB_FILE = "local_app.db"
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>SQLite Remote Updater & Restorer</title>
-    <style>
-        body { font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background-color: #f4f6f9; padding: 20px; box-sizing: border-box; }
-        .card { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; width: 100%; max-width: 500px; margin-bottom: 20px; }
-        .btn { color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 4px; cursor: pointer; transition: background 0.2s; width: 100%; box-sizing: border-box; }
-        .btn-update { background-color: #28a745; }
-        .btn-update:hover { background-color: #218838; }
-        .btn-revert { background-color: #dc3545; padding: 6px 12px; font-size: 14px; width: auto; }
-        .btn-revert:hover { background-color: #c82333; }
-        .alert { padding: 10px; margin-bottom: 20px; border-radius: 4px; text-align: left; word-wrap: break-word; }
-        .success { color: #155724; background-color: #d4edda; border: 1px solid #c3e6cb; }
-        .error { color: #721c24; background-color: #f8d7da; border: 1px solid #f5c6cb; }
-        .backup-list { text-align: left; margin-top: 20px; border-top: 1px solid #eee; padding-top: 20px; }
-        .backup-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed #eee; font-family: monospace; font-size: 13px; }
-        h2, h3 { color: #333; margin-top: 0; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-          {% if messages %}
-            {% for category, message in messages %}
-              <div class="alert {{ category }}">{{ message }}</div>
-            {% endfor %}
-          {% endif %}
-        {% endwith %}
-        
-        <h2>Database Actions</h2>
-        <form action="/update" method="POST">
-            <button type="submit" class="btn btn-update">Backup, Update & Upload</button>
-        </form>
-
-        <div class="backup-list">
-            <h3>Available Remote Backups</h3>
-            {% if backups %}
-                {% for backup in backups %}
-                    <div class="backup-item">
-                        <span>{{ backup }}</span>
-                        <form action="/revert" method="POST" style="margin: 0;">
-                            <input type="hidden" name="backup_filename" value="{{ backup }}">
-                            <button type="submit" class="btn btn-revert">Revert</button>
-                        </form>
-                        <form action="/delete" method="POST" style="margin: 0;">
-                            <input type="hidden" name="backup_filename" value="{{ backup }}">
-                            <button type="submit" class="btn btn-revert">Delete</button>
-                        </form>
-                    </div>
-                {% endfor %}
-            {% else %}
-                <p style="color: #777; font-size: 14px; font-style: italic;">No remote backups found in directory.</p>
-            {% endif %}
-        </div>
-    </div>
-</body>
-</html>
-"""
+HTML_TEMPLATE = 'main.html'
 
 def get_ftp_connection(ftp_url):
     """Parses FTP URL and returns an authenticated FTP instance."""
@@ -104,7 +45,19 @@ def ensure_remote_directories(ftp, remote_path):
 @app.route('/')
 def home():
     ps5_server = os.environ.get("PS5_SERVER", "")
+    sql_script_path = os.environ.get("SQL_SCRIPT_PATH", "")
     backups = []
+    script_content = ""
+    
+    if sql_script_path and os.path.exists(sql_script_path):
+        try:
+            with open(sql_script_path, 'r', encoding='utf-8') as f:
+                script_content = f.read()
+        except Exception as e:
+            print(f"Error reading script file for UI: {e}")
+            script_content = f"-- Error loading script: {e}"
+    else:
+        script_content = "-- SQL_SCRIPT_PATH variable not set or file missing."
     
     if ps5_server:
         ftp_url = f"ftp://{ps5_server}/system_data/priv/mms/app.db"
@@ -126,7 +79,30 @@ def home():
                 try: ftp.quit()
                 except Exception: pass
                 
-    return render_template_string(HTML_TEMPLATE, backups=backups)
+    return render_template(
+        HTML_TEMPLATE,
+        backups=backups,
+        script_content=script_content, 
+        script_path=sql_script_path if sql_script_path else "Not Configured"
+    )
+
+@app.route('/save_script', methods=['POST'])
+def save_script():
+    sql_script_path = os.environ.get("SQL_SCRIPT_PATH", "")
+    new_content = request.form.get("script_content", "")
+    
+    if not sql_script_path:
+        flash("Error: SQL_SCRIPT_PATH environment variable is not set.", "error")
+        return redirect(url_for('home'))
+        
+    try:
+        with open(sql_script_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+        flash("SQL script modifications saved successfully to disk!", "success")
+    except Exception as e:
+        flash(f"Failed to save script changes: {e}", "error")
+        
+    return redirect(url_for('home'))
 
 @app.route('/update', methods=['POST'])
 def update_db():
@@ -174,8 +150,9 @@ def update_db():
             backup_path = f"{remote_path}.{timestamp}.bak"
             print(f"Creating remote backup at: {backup_path}")
             try:
+                # we don't rename but copy instead to keep the original in place, otherwise the PS5 software
+                # causes the database rebuild
                 ftp.voidcmd(f"SITE COPY {remote_path} {backup_path}")
-                # ftp.rename(remote_path, backup_path)
             except Exception as e:
                 raise Exception(f"Failed to create remote backup file: {e}")
             
@@ -192,8 +169,10 @@ def update_db():
         print("Uploading updated file back to target...")
         ftp.cwd('/') 
         with open(LOCAL_DB_FILE, "rb") as local_file:
+            # replace the contents of the existing remote file
             ftp.storbinary(f"STOR {remote_path}", local_file)
         ftp.cwd(os.path.dirname(remote_path))
+        # this is not necessary for the PS5, but it is a good practice to set the correct permissions on the uploaded file
         ftp.sendcmd(f"SITE CHMOD 644 {os.path.basename(remote_path)}")
 
         if file_existed:
@@ -279,26 +258,22 @@ def revert_db():
         target_live_path = remote_path
         target_backup_path = os.path.join(remote_dir, backup_filename)
         
-        # 1. Clear or rename the current active app.db out of the way if it exists
+        # 1. move the contents of the backup files to the active databases
         try:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            replaced_path = f"{target_live_path}.replaced-{timestamp}.bak"
-            ftp.rename(target_live_path, replaced_path)
-            print(f"Moved active app.db out of the way to: {replaced_path}")
+            ftp.voidcmd(f"SITE COPY {target_backup_path} {target_live_path}")
+            print(f"Restored app.db from: {backup_filename}")
         except error_perm:
             # Active database didn't exist or wasn't accessible, safe to continue
             pass
             
-        # 2. Rename selected backup back to app.db
-        print(f"Renaming backup '{backup_filename}' to active database...")
-        ftp.rename(target_backup_path, target_live_path)
+        # 2. Delete selected backup
+        print(f"Deleting backup '{backup_filename}'...")
+        ftp.delete(target_backup_path)
         
         flash(f"Successfully reverted database back to state from: {backup_filename}", "success")
         
     except Exception as e:
         flash(f"Revert operation failed: {e}", "error")
-
-
 
     finally:
         if ftp:
@@ -311,6 +286,8 @@ def revert_db():
             
     return redirect(url_for('home'))
 
+
+# main loop to run the Flask app
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 

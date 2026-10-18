@@ -170,7 +170,8 @@ def update_db():
             backup_path = f"{remote_path}.{timestamp}.bak"
             print(f"Creating remote backup at: {backup_path}")
             try:
-                ftp.rename(remote_path, backup_path)
+                ftp.voidcmd(f"SITE COPY {remote_path} {backup_path}")
+                # ftp.rename(remote_path, backup_path)
             except Exception as e:
                 raise Exception(f"Failed to create remote backup file: {e}")
             

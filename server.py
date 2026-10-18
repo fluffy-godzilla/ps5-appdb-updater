@@ -188,7 +188,9 @@ def update_db():
         ftp.cwd('/') 
         with open(LOCAL_DB_FILE, "rb") as local_file:
             ftp.storbinary(f"STOR {remote_path}", local_file)
-            
+        ftp.cwd(os.path.dirname(remote_path))
+        ftp.sendcmd(f"SITE CHMOD 644 {os.path.basename(remote_path)}")
+
         if file_existed:
             flash("Database successfully backed up, updated, and uploaded!", "success")
         else:

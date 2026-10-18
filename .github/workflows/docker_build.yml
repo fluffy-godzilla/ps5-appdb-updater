@@ -1,5 +1,5 @@
 # for now this is done every time we commit into main
-name: Create and piblish docker image
+name: Create and publish docker image
 
 on:
   push:
